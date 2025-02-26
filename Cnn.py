@@ -4,48 +4,42 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import matplotlib.pyplot as plt
 import cv2
 import os
+import shutil
+import random
 
 #------------------------------------------
 
-def extract_frames(video_path, output_folder, frame_rate=1):
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+def split_data(source, train_dir, validation_dir, test_dir, train_ratio=0.7, validation_ratio=0.15):
+    for folder in [train_dir, validation_dir, test_dir]:
+        os.makedirs(os.path.join(folder, "real"), exist_ok=True)
+        os.makedirs(os.path.join(folder, "fake"), exist_ok=True)
 
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        print(f"Error: Could not open video {video_path}")
-        return
+    for category in ["real", "fake"]:
+        category_path = os.path.join(source, category)
+        subcategories = os.listdir(category_path)
 
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    frame_interval = int(fps / frame_rate)  
+        for subcategory in subcategories:
+            subcategory_path = os.path.join(category_path, subcategory)
+            videos = os.listdir(subcategory_path)
 
-  
-    frame_count = 0
-    saved_count = 0
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+            random.shuffle(videos)
 
-        
-        if frame_count % frame_interval == 0:
-            frame_filename = os.path.join(output_folder, f"frame_{saved_count:04d}.jpg")
-            cv2.imwrite(frame_filename, frame)
-            saved_count += 1
+            train_split = int(len(videos) * train_ratio)
+            validation_split = train_split + int(len(videos) * validation_ratio)
 
-        frame_count += 1
+            for i, video in enumerate(videos):
+                video_path = os.path.join(subcategory_path, video)
+                if i < train_split:
+                    dest = os.path.join(train_dir, category, subcategory, video)
+                elif i < validation_split:
+                    dest = os.path.join(validation_dir, category, subcategory, video)
+                else:
+                    dest = os.path.join(test_dir, category, subcategory, video)
+                shutil.copytree(video_path, dest)
 
-    cap.release()
-    print(f"Extracted {saved_count} frames from {video_path}")
+source = r"D:\Celeb_DF\Frames"
+train_dir = r"D:\Celeb_DF\Frames\train"
+validation_dir = r"D:\Celeb_DF\Frames\validation"
+test_dir = r"D:\Celeb_DF\Frames\test"
 
-video_folder = "D:\Celeb_DF"  
-output_root = "D:\Celeb_DF\Frames"
-
-for category in ["Celeb-real", "Celeb-synthesis", "YouTube-real"]:
-    category_folder = os.path.join(video_folder, category)
-    for video_file in os.listdir(category_folder):
-        video_path = os.path.join(category_folder, video_file)
-        output_folder = os.path.join(output_root, category, os.path.splitext(video_file)[0])
-        extract_frames(video_path, output_folder)
-        
+split_data(source, train_dir, validation_dir, test_dir)
