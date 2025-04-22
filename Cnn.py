@@ -11,6 +11,7 @@ import random
 from sklearn.metrics import classification_report, roc_curve, auc, confusion_matrix
 import numpy as np
 import seaborn as sns
+from tensorflow.keras.callbacks import ReduceLROnPlateau
 
 #------------------------------------------
 
@@ -20,13 +21,13 @@ test_dir = r"D:\Celeb_DF\Frames\test"
 
 train_datagen = ImageDataGenerator(
     rescale=1.0/255.0,
-    rotation_range=20,  
-    width_shift_range=0.2,  
-    height_shift_range=0.2,  
-    shear_range=0.2,  
-    zoom_range=0.2,  
-    horizontal_flip=True,  
-    fill_mode='nearest'  
+    brightness_range=[0.7, 1.3],
+    zoom_range=0.2,
+    shear_range=0.2,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    horizontal_flip=True,
+    fill_mode='nearest'
 )
 
 validation_datagen = ImageDataGenerator(rescale=1.0/255.0)
@@ -56,17 +57,22 @@ test_generator = test_datagen.flow_from_directory(
 def create_cnn():
     model = models.Sequential([
         layers.Conv2D(32, (3, 3), activation='relu', input_shape=(224, 224, 3)),
+        layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
         layers.Conv2D(64, (3, 3), activation='relu'),
+        layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
         layers.Conv2D(128, (3, 3), activation='relu'),
+        layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
-        layers.Flatten(),
+        layers.GlobalAveragePooling2D(),
         layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001)),
+        layers.BatchNormalization(),
         layers.Dropout(0.5),  
         layers.Dense(1, activation='sigmoid')
     ])
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
+    model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
 model = create_cnn()
@@ -74,18 +80,26 @@ model.summary()
 
 
 early_stopping = EarlyStopping(
-    monitor='val_loss', 
-    patience=3,  
-    restore_best_weights=True  
+    monitor='val_loss',
+    patience=3,
+    restore_best_weights=True
+)
+
+lr_scheduler = ReduceLROnPlateau(
+    monitor='val_loss',
+    factor=0.5,
+    patience=2,
+    verbose=1,
+    min_lr=1e-6
 )
 
 history = model.fit(
     train_generator,
-    steps_per_epoch=(train_generator.samples // train_generator.batch_size)+1,
-    epochs=20,  
+    steps_per_epoch=(train_generator.samples // train_generator.batch_size) + 1,
+    epochs=20,
     validation_data=validation_generator,
-    validation_steps=(validation_generator.samples // validation_generator.batch_size)+1,
-    callbacks=[early_stopping] 
+    validation_steps=(validation_generator.samples // validation_generator.batch_size) + 1,
+    callbacks=[early_stopping, lr_scheduler]
 )
 
 test_loss, test_accuracy = model.evaluate(test_generator, steps=(test_generator.samples // test_generator.batch_size)+ 1)
