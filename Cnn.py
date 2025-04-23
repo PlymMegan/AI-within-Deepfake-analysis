@@ -12,6 +12,7 @@ from sklearn.metrics import classification_report, roc_curve, auc, confusion_mat
 import numpy as np
 import seaborn as sns
 from tensorflow.keras.callbacks import ReduceLROnPlateau
+from sklearn.utils.class_weight import compute_class_weight
 
 #------------------------------------------
 
@@ -54,21 +55,44 @@ test_generator = test_datagen.flow_from_directory(
     class_mode='binary'
 )
 
+class_weights = compute_class_weight(
+    class_weight='balanced',
+    classes=np.unique(train_generator.classes),
+    y=train_generator.classes
+)
+class_weights_dict = dict(zip(np.unique(train_generator.classes), class_weights))
+
+print("Class Weights: ", class_weights_dict)
+
 def create_cnn():
     model = models.Sequential([
         layers.Conv2D(32, (3, 3), activation='relu', input_shape=(224, 224, 3)),
         layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
+        
         layers.Conv2D(64, (3, 3), activation='relu'),
         layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
+        
         layers.Conv2D(128, (3, 3), activation='relu'),
         layers.BatchNormalization(),
         layers.MaxPooling2D((2, 2)),
-        layers.GlobalAveragePooling2D(),
-        layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001)),
+        
+        layers.Conv2D(256, (3, 3), activation='relu'),
         layers.BatchNormalization(),
-        layers.Dropout(0.5),  
+        layers.MaxPooling2D((2, 2)),
+        
+        layers.Conv2D(512, (3, 3), activation='relu'),
+        layers.BatchNormalization(),
+        layers.MaxPooling2D((2, 2)),
+        
+        layers.GlobalAveragePooling2D(),
+        
+        layers.Dropout(0.25),
+        layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001)),
+        
+        layers.BatchNormalization(),
+        layers.Dropout(0.5),
         layers.Dense(1, activation='sigmoid')
     ])
     optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
@@ -77,7 +101,6 @@ def create_cnn():
 
 model = create_cnn()
 model.summary()
-
 
 early_stopping = EarlyStopping(
     monitor='val_loss',
@@ -99,7 +122,8 @@ history = model.fit(
     epochs=20,
     validation_data=validation_generator,
     validation_steps=(validation_generator.samples // validation_generator.batch_size) + 1,
-    callbacks=[early_stopping, lr_scheduler]
+    callbacks=[early_stopping, lr_scheduler],
+    class_weight=class_weights_dict  # Adding class weights
 )
 
 test_loss, test_accuracy = model.evaluate(test_generator, steps=(test_generator.samples // test_generator.batch_size)+ 1)
@@ -109,6 +133,7 @@ y_true = test_generator.classes
 
 y_pred_probs = model.predict(test_generator, steps=len(test_generator))  
 y_pred = (y_pred_probs > 0.5).astype(int)
+
 print("Classification Report:")
 print(classification_report(y_true, y_pred))
 
@@ -117,7 +142,7 @@ roc_auc = auc(fpr, tpr)
 
 plt.figure(figsize=(6, 4))
 plt.plot(fpr, tpr, label=f'ROC curve (area = {roc_auc:.2f})')
-plt.plot([0, 1], [0, 1], 'k--')  # Random classifier line
+plt.plot([0, 1], [0, 1], 'k--')
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate')
 plt.title('Receiver Operating Characteristic')
@@ -154,7 +179,6 @@ def plot_training_history(history):
     plt.legend(['Train', 'Validation'], loc='upper left')
 
     plt.show()
-
 
 plot_training_history(history)
 
