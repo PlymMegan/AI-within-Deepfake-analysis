@@ -1,132 +1,122 @@
-import tensorflow as tf
-from tensorflow.keras import layers, models
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
-from tensorflow.keras.callbacks import EarlyStopping
-import matplotlib.pyplot as plt
-import cv2
 import os
+import numpy as np
+import cv2
 import shutil
 import random
-from sklearn.metrics import classification_report, roc_curve, auc, confusion_matrix
-import numpy as np
-import seaborn as sns
-from tensorflow.keras.callbacks import ReduceLROnPlateau
-from sklearn.utils.class_weight import compute_class_weight
+from tqdm import tqdm
+import tensorflow as tf
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras import layers, models
+from tensorflow.keras.applications import VGG16
+from tensorflow.keras.utils import Sequence
 
-#------------------------------------------
+#----------------------------------------------------
 
-train_dir = r"D:\Celeb_DF\Frames\train"
-validation_dir = r"D:\Celeb_DF\Frames\validation"
-test_dir = r"D:\Celeb_DF\Frames\test"
-
-train_datagen = ImageDataGenerator(
-    rescale=1.0/255.0,
-    brightness_range=[0.7, 1.3],
-    zoom_range=0.2,
-    shear_range=0.2,
-    width_shift_range=0.2,
-    height_shift_range=0.2,
-    horizontal_flip=True,
-    fill_mode='nearest'
-)
-
-validation_datagen = ImageDataGenerator(rescale=1.0/255.0)
-test_datagen = ImageDataGenerator(rescale=1.0/255.0)
-
-train_generator = train_datagen.flow_from_directory(
-    train_dir,
-    target_size=(224, 224),
-    batch_size=32,
-    class_mode='binary'
-)
-
-validation_generator = validation_datagen.flow_from_directory(
-    validation_dir,
-    target_size=(224, 224),
-    batch_size=32,
-    class_mode='binary'
-)
-
-test_generator = test_datagen.flow_from_directory(
-    test_dir,
-    target_size=(224, 224),
-    batch_size=32,
-    class_mode='binary'
-)
-
-class_weights = compute_class_weight(
-    class_weight='balanced',
-    classes=np.unique(train_generator.classes),
-    y=train_generator.classes
-)
-class_weights_dict = dict(zip(np.unique(train_generator.classes), class_weights))
-
-print("Class Weights: ", class_weights_dict)
-
-def create_cnn():
-    model = models.Sequential([
-        layers.Conv2D(32, (3, 3), activation='relu', input_shape=(224, 224, 3)),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
+class VideoFrameGenerator(Sequence):
+    def __init__(self, video_dir, batch_size=32, image_size=(224, 224), num_frames=10, shuffle=True):
+        self.video_dir = video_dir
+        self.batch_size = batch_size
+        self.image_size = image_size
+        self.num_frames = num_frames
+        self.shuffle = shuffle
+        self.video_paths = []
+        self.labels = []
         
-        layers.Conv2D(64, (3, 3), activation='relu'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
+        self._load_video_paths_and_labels()
+        self.on_epoch_end()
         
-        layers.Conv2D(128, (3, 3), activation='relu'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
+    def _load_video_paths_and_labels(self):
+        for label, subfolder in enumerate(['real', 'fake']):  # Adjust based on your structure
+            subfolder_path = os.path.join(self.video_dir, subfolder)
+            if not os.path.exists(subfolder_path):
+                continue
+            for video_folder in os.listdir(subfolder_path):
+                video_folder_path = os.path.join(subfolder_path, video_folder)
+                if os.path.isdir(video_folder_path):
+                    self.video_paths.append(video_folder_path)
+                    self.labels.append(label)
+    
+    def __len__(self):
+        return int(np.floor(len(self.video_paths) / self.batch_size))
+    
+    def __getitem__(self, index):
+        batch_video_paths = self.video_paths[index * self.batch_size: (index + 1) * self.batch_size]
+        batch_labels = self.labels[index * self.batch_size: (index + 1) * self.batch_size]
         
-        layers.Conv2D(256, (3, 3), activation='relu'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
+        frames = []
+        for video_path in batch_video_paths:
+            video_frames = self._load_video_frames(video_path)
+            frames.append(video_frames)
         
-        layers.Conv2D(512, (3, 3), activation='relu'),
-        layers.BatchNormalization(),
-        layers.MaxPooling2D((2, 2)),
-        
-        layers.GlobalAveragePooling2D(),
-        
-        layers.Dropout(0.25),
-        layers.Dense(128, activation='relu', kernel_regularizer=tf.keras.regularizers.l2(0.001)),
-        
-        layers.BatchNormalization(),
-        layers.Dropout(0.5),
-        layers.Dense(1, activation='sigmoid')
-    ])
-    optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
-    model.compile(optimizer=optimizer, loss='binary_crossentropy', metrics=['accuracy'])
+        return np.array(frames), np.array(batch_labels)
+    
+    def _load_video_frames(self, video_folder_path):
+        frames = []
+        for frame_filename in sorted(os.listdir(video_folder_path)):
+            if frame_filename.endswith(('.jpg', '.jpeg', '.png')):
+                frame_path = os.path.join(video_folder_path, frame_filename)
+                img = image.load_img(frame_path, target_size=self.image_size)
+                img_array = image.img_to_array(img)
+                frames.append(img_array)
+                if len(frames) >= self.num_frames:
+                    break
+        frames = np.array(frames)
+        if frames.shape[0] < self.num_frames:
+            padding = np.zeros((self.num_frames - frames.shape[0], *self.image_size, 3))
+            frames = np.vstack([frames, padding])
+        return frames
+    
+    def on_epoch_end(self):
+        if self.shuffle:
+            temp = list(zip(self.video_paths, self.labels))
+            np.random.shuffle(temp)
+            self.video_paths, self.labels = zip(*temp)
+
+def create_cnn_lstm_model(input_shape=(10, 224, 224, 3)):
+    base_model = VGG16(weights='imagenet', include_top=False, input_shape=input_shape[1:])
+    base_model.trainable = False
+
+    model = models.Sequential()
+    model.add(layers.TimeDistributed(base_model, input_shape=input_shape))
+    model.add(layers.TimeDistributed(layers.Flatten()))
+    model.add(layers.LSTM(256, return_sequences=False))
+    model.add(layers.Dense(128, activation='relu'))
+    model.add(layers.Dense(1, activation='sigmoid'))
+    
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
     return model
 
-model = create_cnn()
-model.summary()
+    
+    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+    return model
 
-early_stopping = EarlyStopping(
-    monitor='val_loss',
-    patience=3,
-    restore_best_weights=True
-)
+if __name__ == "__main__":
+    video_folder = r"D:\Celeb_DF"
+    output_root = r"D:\Celeb_DF\Frames"
+    
+    extract_frames(video_folder, output_root)
 
-lr_scheduler = ReduceLROnPlateau(
-    monitor='val_loss',
-    factor=0.5,
-    patience=2,
-    verbose=1,
-    min_lr=1e-6
-)
+    source = r"D:\Celeb_DF\Frames"
+    train_dir = r"D:\Celeb_DF\Frames\train"
+    validation_dir = r"D:\Celeb_DF\Frames\validation"
+    test_dir = r"D:\Celeb_DF\Frames\test"
 
-history = model.fit(
-    train_generator,
-    steps_per_epoch=(train_generator.samples // train_generator.batch_size) + 1,
-    epochs=20,
-    validation_data=validation_generator,
-    validation_steps=(validation_generator.samples // validation_generator.batch_size) + 1,
-    callbacks=[early_stopping, lr_scheduler],
-    class_weight=class_weights_dict  # Adding class weights
-)
+    split_data(source, train_dir, validation_dir, test_dir)
 
-test_loss, test_accuracy = model.evaluate(test_generator, steps=(test_generator.samples // test_generator.batch_size)+ 1)
+    model = create_cnn_lstm_model()
+
+    train_generator = VideoFrameGenerator(train_dir, batch_size=32)
+    validation_generator = VideoFrameGenerator(validation_dir, batch_size=32)
+
+    history = model.fit(
+        train_generator,
+        validation_data=validation_generator,
+        epochs=20,
+        steps_per_epoch=len(train_generator),
+        validation_steps=len(validation_generator)
+    )
+    
+    test_loss, test_accuracy = model.evaluate(test_generator, steps=(test_generator.samples // test_generator.batch_size)+ 1)
 print(f"Test Accuracy: {test_accuracy * 100:.2f}%")
 
 y_true = test_generator.classes

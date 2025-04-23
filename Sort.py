@@ -1,81 +1,57 @@
-import matplotlib.pyplot as plt
 import cv2
 import os
 import shutil
+import numpy as np
 import random
-from concurrent.futures import ThreadPoolExecutor
+from tqdm import tqdm
 
 #----------------------------------------------------
 
-def extract_media(input_path, output_folder, frame_rate=1, max_frames=10):
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+def extract_frames(video_dir, output_dir, num_frames=10, image_size=(224, 224)):
+    os.makedirs(output_dir, exist_ok=True)
 
-    saved_count = 0
+    for category in ["Celeb-real", "Celeb-synthesis", "YouTube-real"]:
+        category_path = os.path.join(video_dir, category)
+        if not os.path.exists(category_path):
+            continue
 
-    if input_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
-        cap = cv2.VideoCapture(input_path)
-
-        if not cap.isOpened():
-            print(f"Error: Could not open video {input_path}")
-            return
-
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_interval = int(fps / frame_rate)
-
-        frame_count = 0
-
-        while True:
-            ret, frame = cap.read()
-            if not ret or saved_count >= max_frames:
-                break
-
-            if frame_count % frame_interval == 0:
-                frame_filename = os.path.join(output_folder, f"frame_{saved_count:04d}.jpg")
-                cv2.imwrite(frame_filename, frame)
-                saved_count += 1
-
-            frame_count += 1
-
-        cap.release()
-
-    elif input_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-        img = cv2.imread(input_path)
-        if img is not None:
-            frame_filename = os.path.join(output_folder, "image_0000.jpg")
-            cv2.imwrite(frame_filename, img)
-            saved_count = 1
-
-    if saved_count == 0:
-        print(f"No frames extracted from: {input_path}")
-        shutil.rmtree(output_folder, ignore_errors=True)
-    else:
-        print(f"Extracted {saved_count} frames from {input_path}")
-
-# ----------------------------------------------------
-
-video_folder = r"D:\Celeb_DF"
-output_root = r"D:\Celeb_DF\Frames"
-categories = ["Celeb-real", "Celeb-synthesis", "YouTube-real"]
-
-def extract_all():
-    tasks = []
-
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        for category in categories:
-            category_folder = os.path.join(video_folder, category)
-
-            if not os.path.exists(category_folder):
+        for video_name in tqdm(os.listdir(category_path), desc=f"Processing {category}"):
+            if not video_name.endswith(('.mp4', '.avi', '.mov')):
                 continue
 
-            for media_file in os.listdir(category_folder):
-                media_path = os.path.join(category_folder, media_file)
-                media_name = os.path.splitext(media_file)[0]
-                output_folder = os.path.join(output_root, category, media_name)
+            video_path = os.path.join(category_path, video_name)
+            cap = cv2.VideoCapture(video_path)
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-                tasks.append(executor.submit(extract_media, media_path, output_folder, 1, 10))
+            if total_frames < num_frames:
+                print(f"Skipping {video_name} (only {total_frames} frames)")
+                continue
 
-# ----------------------------------------------------
+            frame_indices = np.linspace(0, total_frames - 1, num_frames, dtype=int)
+            saved_frames = 0
+            frame_count = 0
+
+            video_base = os.path.splitext(video_name)[0]
+            video_out_dir = os.path.join(output_dir, category, video_base)
+            os.makedirs(video_out_dir, exist_ok=True)
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                if frame_count in frame_indices:
+                    frame = cv2.resize(frame, image_size)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                    frame_filename = os.path.join(video_out_dir, f"frame_{saved_frames:03d}.jpg")
+                    cv2.imwrite(frame_filename, frame)
+                    saved_frames += 1
+
+                frame_count += 1
+
+            cap.release()
+
 
 def split_data(source, train_dir, validation_dir, test_dir, train_ratio=0.7, validation_ratio=0.15, max_images=20):
     for folder in [train_dir, validation_dir, test_dir]:
@@ -96,8 +72,6 @@ def split_data(source, train_dir, validation_dir, test_dir, train_ratio=0.7, val
             subpath = os.path.join(real_root, subfolder)
             if os.path.isdir(subpath):
                 real_folders.append((subfolder, subpath))
-    real_count = len(real_folders)
-    print(f"Found {real_count} real sample folders.")
 
     fake_folders = []
     fake_root = os.path.join(source, "Celeb-synthesis")
@@ -105,12 +79,11 @@ def split_data(source, train_dir, validation_dir, test_dir, train_ratio=0.7, val
         subpath = os.path.join(fake_root, subfolder)
         if os.path.isdir(subpath):
             fake_folders.append((subfolder, subpath))
-    print(f"Found {len(fake_folders)} fake sample folders.")
 
-    if len(fake_folders) > real_count:
-        print(f"Downsampling fake folders from {len(fake_folders)} to {real_count}")
+    if len(fake_folders) > len(real_folders):
+        print(f"Downsampling fake folders from {len(fake_folders)} to {len(real_folders)}")
         random.shuffle(fake_folders)
-        fake_folders = fake_folders[:real_count]
+        fake_folders = fake_folders[:len(real_folders)]
 
     combined = [("real", real_folders), ("fake", fake_folders)]
 
@@ -149,8 +122,11 @@ def split_data(source, train_dir, validation_dir, test_dir, train_ratio=0.7, val
         for split in ["train", "validation", "test"]:
             print(f"    {split.capitalize()}: {counts[label][split]}")
 
+
 if __name__ == "__main__":
-    extract_all()
+    video_folder = r"D:\Celeb_DF"
+    output_root = r"D:\Celeb_DF\Frames"
+    extract_frames(video_folder, output_root)
 
     source = r"D:\Celeb_DF\Frames"
     train_dir = r"D:\Celeb_DF\Frames\train"
